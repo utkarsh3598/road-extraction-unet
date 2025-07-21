@@ -10,7 +10,7 @@ st.title("🛣️ Road Extraction from Satellite Images")
 # =============================
 # CONFIG
 # =============================
-MODEL_PATH = "checkpoints/road_unet_epoch30.pth"
+MODEL_PATH = "checkpoints/road_unet_epoch70.pth"
 IMG_SIZE = (128, 128)
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
