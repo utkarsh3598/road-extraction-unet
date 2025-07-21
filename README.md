@@ -14,7 +14,7 @@ pinned: false
 This web app extracts road networks from satellite imagery using a *U-Net deep learning model* trained on high-resolution aerial images.
 
 ## 🔗 *Live Demo*
-👉 [Click here to try the app](https://huggingface.co/spaces/R1ya/road-extraction-unet)
+👉 [Click here to try the app](https://huggingface.co/spaces/R1ya/road-extraction-project)
 
 ---
 
