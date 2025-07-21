@@ -1,99 +1,79 @@
-# train.py
-print("🚀 Starting training...")
-
-import os
 import torch
-from torch import nn
-from tqdm import tqdm
-from torch.utils.data import DataLoader, random_split
+import torch.nn as nn
+from torch.utils.data import DataLoader
 from torchvision import transforms
-from model import UNet, RoadDataset 
-from losses import CombinedLoss 
+from dataset import RoadDataset
+from model import UNet
+from tqdm import tqdm
+import os, time
 
-# Device
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f" Using device: {device}")
+# Paths
+TRAIN_IMG_DIR = "/content/train_images_jpg_local"
+TRAIN_MASK_DIR = "/content/train_masks_jpg_local"
+CHECKPOINT_DIR = "/content/checkpoints"
+os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
-# Transform
-transform = transforms.Compose([
-    transforms.Resize((256, 256)),
+# Configs
+LEARNING_RATE = 1e-4
+BATCH_SIZE = 4
+EPOCHS = 70
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+print(f"🚀 Using device: {DEVICE}")
+if DEVICE == "cuda":
+    print(f"🔥 GPU: {torch.cuda.get_device_name(0)}")
+    print(f"🧠 Initial VRAM usage: {torch.cuda.memory_allocated(0) / 1024**2:.2f} MB")
+
+# Transforms
+train_transform = transforms.Compose([
+    transforms.Resize((128, 128)),
     transforms.ToTensor()
 ])
 
-# Paths
-image_dir = r"C:\\Users\\harsh\\Music\\OneDrive\Desktop\\road-extraction-unet\\all new files\\images"
-mask_dir = r"C:\\Users\\harsh\\Music\\OneDrive\Desktop\\road-extraction-unet\\all new files\\masks"
+# Dataset + Loader
+train_ds = RoadDataset(TRAIN_IMG_DIR, TRAIN_MASK_DIR, transform=train_transform)
+train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=2, pin_memory=True)
 
-# Dataset
-dataset = RoadDataset(image_dir=image_dir, mask_dir=mask_dir, transform=transform)
-print(f" Found {len(dataset)} images")
+# Model, loss, optimizer
+model = UNet(in_channels=3, out_channels=1).to(DEVICE)
+loss_fn = nn.BCEWithLogitsLoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
-# Train/Val Split
-train_size = int(0.8 * len(dataset))
-val_size = len(dataset) - train_size
-train_ds, val_ds = random_split(dataset, [train_size, val_size])
-train_loader = DataLoader(train_ds, batch_size=4, shuffle=True)
-val_loader = DataLoader(val_ds, batch_size=4)
-
-# Model, Loss, Optimizer
-model = UNet().to(device)
-loss_fn = CombinedLoss(alpha=0.3)
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-
-# Training Helper functions
-def train_one_epoch(model, dataloader, optimizer, loss_fn, device):
+def train_fn(loader, model, optimizer, loss_fn):
     model.train()
-    total_loss = 0
-    for images, masks in tqdm(dataloader, desc="🔁 Training"):
-        images, masks = images.to(device), masks.to(device)
-        preds = model(images)
-        loss = loss_fn(preds, masks)
+    loop = tqdm(loader, leave=False)
+    for batch_idx, (data, targets) in enumerate(loop):
+        data, targets = data.to(DEVICE), targets.to(DEVICE)
+        preds = model(data)
+        loss = loss_fn(preds, targets)
+
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        total_loss += loss.item()
-    return total_loss / len(dataloader)
 
-def calculate_iou(preds, masks):
-    preds = (preds.sigmoid() > 0.5).float()
-    intersection = (preds * masks).sum((1, 2, 3))
-    union = preds.sum((1, 2, 3)) + masks.sum((1, 2, 3)) - intersection
-    return (intersection / (union + 1e-6)).mean().item()
+        if DEVICE == "cuda":
+            vram = torch.cuda.memory_allocated(0) / 1024**2
+            loop.set_postfix(loss=loss.item(), vram=f"{vram:.1f} MB")
+        else:
+            loop.set_postfix(loss=loss.item())
 
-def val_one_epoch(model, dataloader, loss_fn, device):
-    model.eval()
-    total_loss, total_iou = 0, 0
-    with torch.no_grad():
-        for images, masks in tqdm(dataloader, desc="🧪 Validating"):
-            images, masks = images.to(device), masks.to(device)
-            preds = model(images)
-            loss = loss_fn(preds, masks)
-            total_loss += loss.item()
-            total_iou += calculate_iou(preds, masks)
-    return total_loss / len(dataloader), total_iou / len(dataloader)
+# Train Loop
+for epoch in range(EPOCHS):
+    start_time = time.time()
+    print(f"\n🎯 Epoch {epoch+1}/{EPOCHS} started...")
 
-# Training Loop
-best_loss = float('inf')
-best_iou = 0.0
-num_epochs = 10
+    train_fn(train_loader, model, optimizer, loss_fn)
 
-for epoch in range(1, num_epochs + 1):
-    print(f"\n🌟 Epoch {epoch}")
-    train_loss = train_one_epoch(model, train_loader, optimizer, loss_fn, device)
-    val_loss, val_iou = val_one_epoch(model, val_loader, loss_fn, device)
+    # Save checkpoint
+    torch.save({
+        "state_dict": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+    }, f"{CHECKPOINT_DIR}/road_unet_epoch{epoch+1}.pth")
 
-    print(f"📉 Train Loss: {train_loss:.4f} | 📊 Val Loss: {val_loss:.4f} | 🟩 Val IoU: {val_iou:.4f}")
+    duration = time.time() - start_time
+    print(f"✅ Epoch {epoch+1} done in {duration:.2f} seconds")
 
-    # ✅ Save model based on lowest train loss
-    if train_loss < best_loss:
-        best_loss = train_loss
-        torch.save(model.state_dict(), "best_by_loss.pth")
-        print("💾 Saved best_by_loss.pth ✅")
+    if DEVICE == "cuda":
+        vram = torch.cuda.memory_allocated(0) / 1024**2
+        print(f"💾 VRAM used after epoch {epoch+1}: {vram:.2f} MB")
 
-    # ✅ Save model based on highest validation IoU
-    if val_iou > best_iou:
-        best_iou = val_iou
-        torch.save(model.state_dict(), "best_by_iou.pth")
-        print("💾 Saved best_by_iou.pth ✅")
-
-print("\n✅ Training complete.")
